@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Platformer — 15 Monedas + Móvil/Tablet/PC</title>
+<style>
+  :root { --bg:#87CEEB; --ground:#654321; --ui:#111; --accent:#ffcc00; }
+  *{box-sizing:border-box}
+  html,body{height:100%;margin:0;background:#222;font-family:system-ui,Segoe UI,Roboto,Arial; color:#fff; user-select:none; -webkit-user-select:none; touch-action:manipulation;}
+  .wrap{display:grid;place-items:center;height:100%;padding:10px}
+  canvas{background:var(--bg);border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,.35);image-rendering:pixelated;max-width:100%}
+
+  .hud{position:fixed;top:10px;left:50%;transform:translateX(-50%);
+       background:rgba(255,255,255,.85);color:#111;padding:8px 14px;border-radius:999px;font-weight:700;font-size:14px;display:flex;gap:12px;align-items:center;z-index:5}
+  .hud b{font-weight:800}
+
+  /* Botones de escritorio (opcionales) */
+  .top-btns{position:fixed;top:10px;right:10px;display:flex;gap:8px;z-index:5}
+  .top-btns button{padding:8px 12px;border-radius:10px;border:none;background:#fff;color:#111;box-shadow:0 4px 12px rgba(0,0,0,.2);cursor:pointer}
+
+  /* Overlay genérico */
+  .msg{position:fixed;inset:0;display:none;place-items:center;background:rgba(0,0,0,.45);color:#fff;text-align:center;z-index:10}
+  .msg.active{display:grid}
+  .card{background:#101114;border:1px solid #2a2d34;padding:20px 24px;border-radius:16px;max-width:520px}
+
+  /* Quiz monedas (opción click/tap) */
+  .quiz{position:fixed;inset:0;display:none;place-items:center;background:rgba(0,0,0,.55);z-index:12}
+  .quiz.active{display:grid}
+  .quiz .q{font-size:26px;font-weight:800;letter-spacing:1px;margin:6px 0 14px}
+  .quiz .opts{display:grid;grid-template-columns:repeat(2,minmax(120px,1fr));gap:10px}
+  .quiz button.opt{padding:14px;border-radius:12px;border:1px solid #2a2d34;background:#0f1218;color:#fff;cursor:pointer;font-size:18px}
+  .result{margin-top:10px;min-height:22px;font-weight:700;text-align:center}
+
+  /* Touchpad móvil */
+  .touchpad{position:fixed;bottom:12px;left:0;right:0;display:flex;justify-content:space-between;gap:12px;padding:0 12px;z-index:9;pointer-events:none}
+  .cluster{display:flex;gap:10px;pointer-events:auto}
+  .pad{min-width:64px;min-height:64px;border-radius:16px;border:1px solid #2a2d34;background:#0f1218;box-shadow:0 6px 16px rgba(0,0,0,.35);color:#fff;font-size:22px;cursor:pointer}
+  .pad:active{transform:translateY(1px);filter:brightness(1.08)}
+
+  @media (min-width: 900px){
+    .touchpad{display:none} /* oculto en escritorio grande */
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="hud" id="hud">
+    <span>⭐ Monedas: <b id="coins">0</b></span>
+    <span>❤️ Vidas: <b id="lives">3</b></span>
+    <span>🏁 Nivel: <b id="level">1</b></span>
+    <span>⏸ <b id="paused">No</b></span>
+  </div>
+
+  <div class="top-btns">
+    <button onclick="togglePause()">Pausa (P)</button>
+    <button onclick="restart()">Reiniciar (R)</button>
+  </div>
+
+  <canvas id="game"></canvas>
+
+  <!-- Overlay (pausa / ganar / game over) -->
+  <div class="msg" id="overlay">
+    <div class="card" id="overlayCard">
+      <h2 id="overlayTitle">¡Listo!</h2>
+      <p id="overlayText">Presiona R para reiniciar o P para pausar.</p>
+      <p><small>Controles: A/D o ←/→ moverse, W o Espacio saltar (doble salto) — en móvil usa los botones.</small></p>
+      <div style="display:flex;gap:10px;justify-content:center;margin-top:10px">
+        <button class="pad" onclick="restart()">Reiniciar</button>
+        <button class="pad" onclick="togglePause()">Seguir</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Quiz de MONEDAS (opciones) -->
+  <div class="quiz" id="quiz">
+    <div class="card">
+      <h2>⭐ ¡Moneda! Resuelve para quedártela</h2>
+      <div id="quizQ" class="q">3 + 4 = ?</div>
+      <div id="quizOpts" class="opts"></div>
+      <div id="quizResult" class="result"></div>
+    </div>
+  </div>
+
+  <!-- Controles táctiles -->
+  <div class="touchpad">
+    <div class="cluster">
+      <button class="pad" id="btnLeft">◀</button>
+      <button class="pad" id="btnRight">▶</button>
+    </div>
+    <div class="cluster">
+      <button class="pad" id="btnJump">⤒</button>
+      <button class="pad" id="btnPause">⏸</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ======= Config base / Responsive canvas ======= */
+const VIEW_W=960, VIEW_H=540;
+const cnv=document.getElementById('game'), ctx=cnv.getContext('2d');
+let dpr=1, scale=1;
+function resizeCanvas(){
+  const margin=16;
+  let availW = window.innerWidth - margin*2;
+  let availH = window.innerHeight - 170; /* deja espacio HUD/touchpad */
+  const aspect = VIEW_W / VIEW_H;
+  if(availW/availH > aspect) availW = availH*aspect; else availH = availW/aspect;
+  const cssW = Math.max(320, Math.min(availW, 1200));
+  const cssH = cssW / aspect;
+  dpr = Math.min(window.devicePixelRatio||1, 2);
+  cnv.style.width = cssW+'px';
+  cnv.style.height = cssH+'px';
+  cnv.width = Math.round(cssW * dpr);
+  cnv.height = Math.round(cssH * dpr);
+  scale = (cnv.width / dpr) / VIEW_W;
+  ctx.imageSmoothingEnabled=false;
+}
+window.addEventListener('resize', resizeCanvas);
+
+/* ===== Utilidades ===== */
+const clamp=(v,min,max)=>Math.max(min,Math.min(max,v));
+const rectsOverlap=(a,b)=>!(a.x+a.w<=b.x||a.x>=b.x+b.w||a.y+a.h<=b.y||a.y>=b.y+b.h);
+
+/* ===== Entrada (teclado) ===== */
+const keys={left:false,right:false,up:false};
+addEventListener('keydown',e=>{
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+  if(e.key==='ArrowLeft'||e.key==='a'||e.key==='A') keys.left=true;
+  if(e.key==='ArrowRight'||e.key==='d'||e.key==='D') keys.right=true;
+  if(e.key==='ArrowUp'||e.key==='w'||e.key==='W'||e.key===' ') keys.up=true;
+  if(e.key==='p'||e.key==='P') togglePause();
+  if(e.key==='r'||e.key==='R') restart();
+});
+addEventListener('keyup',e=>{
+  if(e.key==='ArrowLeft'||e.key==='a'||e.key==='A') keys.left=false;
+  if(e.key==='ArrowRight'||e.key==='d'||e.key==='D') keys.right=false;
+  if(e.key==='ArrowUp'||e.key==='w'||e.key==='W'||e.key===' ') keys.up=false;
+});
+
+/* ===== Touchpad (móvil/tablet) ===== */
+function bindHold(btn, keyName){
+  btn.addEventListener('pointerdown', e=>{
+    e.preventDefault();
+    btn.setPointerCapture(e.pointerId);
+    if(keyName==='pause'){ togglePause(); return; }
+    keys[keyName]=true;
+  });
+  const off= e=>{ if(keyName!=='pause') keys[keyName]=false; };
+  btn.addEventListener('pointerup', off);
+  btn.addEventListener('pointercancel', off);
+  btn.addEventListener('pointerleave', off);
+}
+bindHold(document.getElementById('btnLeft'), 'left');
+bindHold(document.getElementById('btnRight'), 'right');
+bindHold(document.getElementById('btnJump'), 'up');
+bindHold(document.getElementById('btnPause'), 'pause');
+
+/* ===== HUD / Overlay ===== */
+const hudCoins=document.getElementById('coins');
+const hudLives=document.getElementById('lives');
+const hudLevel=document.getElementById('level');
+const hudPaused=document.getElementById('paused');
+const overlay=document.getElementById('overlay');
+const overlayTitle=document.getElementById('overlayTitle');
+const overlayText=document.getElementById('overlayText');
+
+/* ===== Quiz DOM ===== */
+const quizBox=document.getElementById('quiz');
+const quizQ=document.getElementById('quizQ');
+const quizOpts=document.getElementById('quizOpts');
+const quizResult=document.getElementById('quizResult');
+
+let state;
+const GRAV=0.9, MOVE=0.6, MAXSPEED=6.2, JUMP=15, FRICTION=0.85;
+const TILE=48;
+
+/* Salto mejorado */
+const MAX_JUMPS=2;
+const COYOTE_TIME=0.12;
+const JUMP_BUFFER=0.12;
+let prevUp=false;
+
+/* Quiz Monedas */
+let quizActive=false;
+let quizAnswer=0;
+let pendingCoin=null;
+
+/* --------- NIVEL (B/E/F) ---------- */
+function makeLevel1(){
+  // Sin 'C' aquí; colocaremos EXACTAMENTE 15 monedas luego.
+  const raw=[
+"                                                                                                            ",
+"                         B      B          B       B               B     B                        B         ",
+"          BBB                 BBBBBBB                 BBBBB             BBBB                 BBB            ",
+"                    BBBBBB                   BBBBB     E        BBBB        BB     BB            BB    F   ",
+"          BBBBB             E     BBBB                BBB         B            BBBB     E    BBBB   BBBB   ",
+"   BBBBBB               BBBBBBB                BBBBBBB     BBBBBBB         BBBBBBB                 BBB     ",
+"               E        BBB       BBBB              E       BBBB                 BBBB          BBBB        ",
+"  BBB      BBBB             BBBB        BBBBB             BBBBBB         E      BBBBBB               BBB   ",
+"             BBBBBB      E            BBB            BBBBBB              BBBBBB              BBBBB         ",
+"      E      BBBB       BBBBBB        BBBBB      E    BBBB     BBBB          BBBB        E        BBBB     ",
+"                                                                                                            ",
+"GGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGGG",
+  ];
+
+  const objs={ground:[], blocks:[], coins:[], enemies:[], flag:null};
+
+  for(let r=0;r<raw.length;r++){
+    for(let c=0;c<raw[r].length;c++){
+      const ch=raw[r][c];
+      const x=c*TILE, y=r*TILE;
+      if(ch==='G'){ objs.ground.push({x,y,w:TILE,h:TILE}); }
+      else if(ch==='B'){ objs.blocks.push({x,y,w:TILE,h:TILE}); }
+      else if(ch==='E'){ objs.enemies.push({x,y:y+TILE-32,w:36,h:32,dir:Math.random()<.5?-1:1,vx:0,vy:0,alive:true,range:[x-96,x+96]}); }
+      else if(ch==='F'){ objs.flag={x,y:y-32,w:28,h:80}; }
+    }
+  }
+
+  // Escalera amplia hacia la bandera si está alta
+  if(objs.flag){
+    const fx = objs.flag.x;
+    const fy = objs.flag.y;
+    const steps = 8;
+    for(let i=0;i<steps;i++){
+      const stepW = 4;
+      for(let j=0;j<stepW;j++){
+        objs.blocks.push({ x: fx - (steps*5*TILE) + (i*5+j)*TILE, y: (fy + 80) - i*TILE, w:TILE, h:TILE });
+      }
+      // Enemigos sobre algunos peldaños
+      if(i%3===1){
+        const ex = fx - (steps*5*TILE) + (i*5+2)*TILE;
+        const ey = (fy + 80) - (i+1)*TILE - 32;
+        objs.enemies.push({x:ex,y:ey,w:36,h:32,dir:(i%2?1:-1),vx:0,vy:0,alive:true,range:[ex-96,ex+96]});
+      }
+    }
+  }
+
+  // === Colocar EXACTAMENTE 15 MONEDAS, bien distribuidas ===
+  const addCoinTile=(tx,ty)=>objs.coins.push({x:tx*TILE+12,y:ty*TILE+12,w:24,h:24,t:0});
+  // (xTile, yTile) repartidas desde el inicio hasta la escalera
+  const coinsTiles=[
+    [6,7],[12,6],[18,5],[24,6],[30,4],
+    [36,5],[42,6],[48,4],[54,5],[60,6],
+    [66,4],[72,5],[78,6],[84,5],[90,4] // 15 exactas
+  ];
+  coinsTiles.forEach(([tx,ty])=>addCoinTile(tx,ty));
+
+  return objs;
+}
+
+/* ===== Estado/HUD ===== */
+function reset(){
+  state={
+    level:1,
+    coins:0,
+    lives:3,
+    paused:false,
+    camX:0,
+    world:makeLevel1(),
+    player:{x:80,y:0,w:34,h:42,vx:0,vy:0,onGround:false,dead:false,face:1,inv:0,
+            jumpCount:0,coyote:0,jumpBuffer:0}
+  };
+  quizActive=false; pendingCoin=null;
+  overlay.classList.remove('active');
+  quizBox.classList.remove('active');
+  updateHUD();
+  resizeCanvas();
+}
+function restart(){ reset(); }
+function togglePause(){
+  if(quizActive) return; // no pausar durante el quiz
+  state.paused=!state.paused;
+  hudPaused.textContent=state.paused?'Sí':'No';
+  overlayTitle.textContent=state.paused?'Pausa':'';
+  overlayText.textContent=state.paused?'Usa A/D/←/→ o botones táctiles.':'';
+  overlay.classList.toggle('active',state.paused);
+}
+function updateHUD(){
+  hudCoins.textContent=state.coins;
+  hudLives.textContent=state.lives;
+  hudLevel.textContent=state.level;
+  hudPaused.textContent=state.paused?'Sí':'No';
+}
+
+/* ===== Quiz de Monedas (suma ≤ 10 con opciones) ===== */
+function genSumOptions(){
+  // a+b <= 10
+  const a = Math.floor(Math.random()*10);
+  const maxB = 10 - a;
+  const b = Math.floor(Math.random()*(maxB+1));
+  const ans = a + b;
+  quizAnswer = ans;
+  quizQ.textContent = `${a} + ${b} = ?`;
+
+  // 3 distractores únicos dentro [0..10]
+  const opts = new Set([ans]);
+  while(opts.size<4){
+    const d = Math.floor(Math.random()*11);
+    opts.add(d);
+  }
+  const arr=[...opts];
+  // barajar
+  for(let i=arr.length-1;i>0;i--){
+    const j=Math.floor(Math.random()*(i+1));
+    [arr[i],arr[j]]=[arr[j],arr[i]];
+  }
+
+  quizOpts.innerHTML='';
+  arr.forEach(v=>{
+    const btn=document.createElement('button');
+    btn.className='opt';
+    btn.textContent=String(v);
+    btn.onclick=()=>submitQuizChoice(v);
+    quizOpts.appendChild(btn);
+  });
+  quizResult.textContent='';
+}
+function openQuizForCoin(coinRef){
+  pendingCoin = coinRef;
+  quizActive=true;
+  state.paused=true;
+  hudPaused.textContent='Sí';
+  genSumOptions();
+  quizBox.classList.add('active');
+}
+function closeQuiz(){
+  quizActive=false;
+  quizBox.classList.remove('active');
+  state.paused=false;
+  hudPaused.textContent='No';
+  pendingCoin=null;
+}
+function submitQuizChoice(val){
+  if(val===quizAnswer){
+    quizResult.textContent='¡Correcto! ⭐';
+    const W=state.world;
+    const idx=W.coins.indexOf(pendingCoin);
+    if(idx>=0){ W.coins.splice(idx,1); state.coins++; updateHUD(); }
+    state.player.inv=0.6;
+    closeQuiz();
+  }else{
+    quizResult.textContent='Incorrecto. Vuelves al inicio.';
+    respawnAtStart();
+    state.player.inv=1.0;
+    closeQuiz();
+  }
+}
+
+/* ===== Ganar / Game Over ===== */
+function win(){
+  overlayTitle.textContent='🎉 ¡Nivel completado!';
+  overlayText.textContent='Recolectaste ' + state.coins + ' monedas. Presiona R para volver a jugar.';
+  overlay.classList.add('active');
+  state.paused=true; updateHUD();
+}
+function gameOver(){
+  overlayTitle.textContent='💀 Sin vidas';
+  overlayText.textContent='Presiona R para reiniciar.';
+  overlay.classList.add('active');
+  state.paused=true; updateHUD();
+}
+
+/* ===== Físicas y colisiones ===== */
+function handleCollisions(rect, colliders){
+  rect.x += rect.vx;
+  for(const c of colliders){
+    if(rectsOverlap(rect,c)){
+      if(rect.vx>0) rect.x = c.x - rect.w;
+      else if(rect.vx<0) rect.x = c.x + c.w;
+      rect.vx=0;
+    }
+  }
+  rect.y += rect.vy;
+  rect.onGround=false;
+  for(const c of colliders){
+    if(rectsOverlap(rect,c)){
+      if(rect.vy>0){ rect.y = c.y - rect.h; rect.onGround=true; }
+      else if(rect.vy<0){ rect.y = c.y + c.h; }
+      rect.vy=0;
+    }
+  }
+}
+function respawnAtStart(){
+  const p=state.player;
+  p.x=80; p.y=0; p.vx=0; p.vy=0;
+  state.camX=0;
+  p.inv=1.0;
+}
+
+/* ===== Step ===== */
+function step(dt){
+  if(state.paused) return;
+
+  const p=state.player, W=state.world;
+
+  const justPressedUp = keys.up && !prevUp;
+  prevUp = keys.up;
+
+  if(p.inv>0) p.inv-=dt;
+
+  // Input horizontal
+  if(keys.left)  { p.vx -= MOVE; p.face=-1; }
+  if(keys.right) { p.vx += MOVE; p.face= 1; }
+  p.vx = clamp(p.vx,-MAXSPEED,MAXSPEED);
+  p.vx *= p.onGround ? FRICTION : 0.99;
+
+  // Gravedad
+  p.vy += GRAV;
+
+  // Colisiones con sólidos
+  const solids=[...W.ground,...W.blocks];
+  handleCollisions(p, solids);
+
+  // Coyote + buffer + saltos
+  if(p.onGround){
+    p.coyote = COYOTE_TIME;
+    p.jumpCount = 0;
+  }else{
+    p.coyote = Math.max(0, p.coyote - dt);
+  }
+  if(justPressedUp) p.jumpBuffer = JUMP_BUFFER;
+  p.jumpBuffer = Math.max(0, p.jumpBuffer - dt);
+
+  if(p.jumpBuffer>0){
+    if(p.onGround || p.coyote>0){
+      p.vy = -JUMP; p.onGround=false; p.coyote=0; p.jumpBuffer=0; p.jumpCount=1;
+    }else if(p.jumpCount < MAX_JUMPS){
+      p.vy = -JUMP*0.92; p.jumpCount++; p.jumpBuffer=0;
+    }
+  }
+
+  // Caída fuera
+  if(p.y>VIEW_H+400){ respawnAtStart(); }
+
+  // MONEDAS (abren quiz al tocar)
+  if(!quizActive){
+    for(let i=W.coins.length-1;i>=0;i--){
+      const c=W.coins[i];
+      c.t+=dt;
+      if(rectsOverlap(p,c)){ openQuizForCoin(c); break; }
+    }
+  }
+
+  // ENEMIGOS
+  for(const e of W.enemies){
+    if(!e.alive) continue;
+    e.vx += 0.1*e.dir;
+    e.vx = clamp(e.vx,-2.2,2.2);
+    e.vy += GRAV;
+    handleCollisions(e, solids);
+    if(e.x<e.range[0]) { e.x=e.range[0]; e.dir=1; }
+    if(e.x>e.range[1]) { e.x=e.range[1]; e.dir=-1; }
+
+    if(rectsOverlap(p,e)){
+      if(p.vy>2){
+        e.alive=false; p.vy=-JUMP*0.6;
+      }else if(p.inv<=0){
+        state.lives--; updateHUD();
+        if(state.lives<=0){ gameOver(); return; }
+        respawnAtStart();
+      }
+    }
+  }
+
+  // Meta
+  if(W.flag && rectsOverlap(p,W.flag)) win();
+
+  // Cámara
+  state.camX = clamp(p.x - VIEW_W*0.35, 0, 1e7);
+}
+
+/* ===== Render ===== */
+let perfNow=0;
+function draw(){
+  // aplicar transform para retina + escala responsiva
+  ctx.setTransform(dpr*scale, 0, 0, dpr*scale, 0, 0);
+
+  const cam=state.camX|0;
+  ctx.clearRect(0,0,VIEW_W,VIEW_H);
+
+  // cielo
+  ctx.fillStyle='#87CEEB'; ctx.fillRect(0,0,VIEW_W,VIEW_H);
+
+  // nubes
+  for(let i=0;i<8;i++){
+    const x=((i*360)+Math.sin(perfNow/1500+i)*90)-cam, y=50+ (i%3)*40;
+    ctx.fillStyle='rgba(255,255,255,.9)';
+    ctx.beginPath(); ctx.ellipse(x,y,60,26,0,0,Math.PI*2); ctx.fill();
+  }
+  const W=state.world;
+
+  // suelo
+  ctx.fillStyle='#7C4A28';
+  for(const g of W.ground){
+    ctx.fillRect(g.x-cam,g.y,g.w,g.h);
+    ctx.fillStyle='#2ecc71'; ctx.fillRect(g.x-cam,g.y, g.w,8);
+    ctx.fillStyle='#7C4A28';
+  }
+  // bloques
+  for(const b of W.blocks){
+    ctx.fillStyle='#c58a3a';
+    ctx.fillRect(b.x-cam,b.y,b.w,b.h);
+    ctx.strokeStyle='#8d5c1a';
+    ctx.strokeRect(b.x-cam+.5,b.y+.5,b.w-1,b.h-1);
+  }
+  // monedas (15 exactas)
+  for(const c of W.coins){
+    const bob = Math.sin(c.t*6)*3;
+    ctx.beginPath();
+    ctx.fillStyle='#ffd54f';
+    ctx.ellipse(c.x-cam+12, c.y+12+bob, 12,12,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle='#b57f00';
+    ctx.stroke();
+  }
+  // bandera
+  if(W.flag){
+    const f=W.flag;
+    ctx.fillStyle='#555'; ctx.fillRect(f.x-cam+11,f.y,6,f.h);
+    ctx.fillStyle='#e74c3c';
+    const wave = Math.sin(perfNow/200)*4;
+    ctx.beginPath();
+    ctx.moveTo(f.x-cam+14,f.y+8);
+    ctx.lineTo(f.x-cam+60+wave,f.y+18);
+    ctx.lineTo(f.x-cam+14,f.y+28);
+    ctx.closePath(); ctx.fill();
+  }
+  // enemigos
+  for(const e of W.enemies){
+    if(!e.alive) continue;
+    const x=e.x-cam, y=e.y;
+    ctx.fillStyle='#8e44ad';
+    ctx.fillRect(x,y,e.w,e.h);
+    ctx.fillStyle='#fff';
+    ctx.fillRect(x+7,y+8,8,8); ctx.fillRect(x+21,y+8,8,8);
+    ctx.fillStyle='#000';
+    ctx.fillRect(x+10,y+11,4,4); ctx.fillRect(x+24,y+11,4,4);
+    ctx.fillStyle='#6c3483';
+    ctx.fillRect(x+4,y+e.h-6,10,6); ctx.fillRect(x+22,y+e.h-6,10,6);
+  }
+  // jugador
+  const p=state.player, px=p.x-cam, py=p.y;
+  const blink = (p.inv>0 && Math.floor(perfNow/60)%2===0);
+  if(!blink){
+    ctx.fillStyle='#2980b9'; ctx.fillRect(px,py,p.w,p.h);
+    ctx.fillStyle='#fff'; ctx.fillRect(px+8,py+8,18,14);
+    ctx.fillStyle='#000';
+    const eyeOff = p.face===1?4:0;
+    ctx.fillRect(px+10+eyeOff,py+12,5,5);
+    ctx.fillRect(px+20+eyeOff,py+12,5,5);
+    ctx.fillStyle='#e74c3c'; ctx.fillRect(px+2,py+2,p.w-4,10);
+  }
+  ctx.fillStyle='rgba(0,0,0,.08)'; ctx.fillRect(0,VIEW_H-4,VIEW_W,4);
+}
+
+/* ===== Loop ===== */
+let last=0;
+function loop(ts){
+  perfNow=ts;
+  const dt=Math.min( (ts-last)/1000, 0.033 );
+  last=ts;
+  step(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+
+/* ===== Inicio ===== */
+function init(){
+  reset();
+  requestAnimationFrame(loop);
+}
+init();
+
+/* Exponer botones */
+window.restart=restart;
+window.togglePause=togglePause;
+</script>
+</body>
+</html>
